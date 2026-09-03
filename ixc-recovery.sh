@@ -68,7 +68,9 @@ check_dependencies() {
 
 render_header() {
     ui_clear
-    ui_title "IXC BACKUP RECOVERY TOOL"
+    ui_title "ELASTIC"
+    ui_muted "Diagnósticos e Restauração"
+    echo
     echo "Servidor:       $(hostname)"
     echo "Sistema:        $( . /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)"
 
@@ -92,15 +94,17 @@ action_view_backups() {
     ui_pause
 }
 
-action_view_logs() {
-    ui_title "LOGS"
-    local dir
-    dir="$(dirname "$LOG_FILE")"
-    if [[ ! -d "$dir" ]] || [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]; then
-        ui_warning "Nenhum log encontrado em ${dir}."
-    else
-        ls -la "$dir"
-    fi
+# Pede a senha do Elasticsearch uma única vez, logo na abertura da
+# ferramenta, e deixa em ES_PASSWORD pro resto desta execução -
+# credentials_ensure_es_password (lib/credentials.sh) é idempotente, então
+# nenhuma tela mais adiante (diagnóstico ou restauração) pergunta de novo.
+# Só dura esta execução do .sh - fechou e abriu de novo, pede outra vez.
+# `|| true`: se o operador não informar a senha agora (ex: só quer ver
+# backups disponíveis), a ferramenta segue pro menu normalmente - cada tela
+# que realmente precisar da senha pede na hora, como já fazia antes.
+ensure_startup_password() {
+    render_header
+    credentials_ensure_es_password || true
     ui_pause
 }
 
@@ -112,7 +116,6 @@ main_menu() {
             "1" "Restaurar Elasticsearch" \
             "2" "Diagnóstico Elasticsearch" \
             "3" "Ver backups disponíveis" \
-            "4" "Ver logs" \
             "0" "Sair")"
 
         # `|| true`: nenhuma ação de menu deve poder derrubar a ferramenta
@@ -122,7 +125,6 @@ main_menu() {
             1) wizard_run_restore || true ;;
             2) diagnostics_menu || true ;;
             3) action_view_backups || true ;;
-            4) action_view_logs || true ;;
             0) echo; ui_muted "Até logo."; log_info "Execução finalizada."; exit 0 ;;
         esac
     done
@@ -130,4 +132,5 @@ main_menu() {
 
 check_root
 check_dependencies
+ensure_startup_password
 main_menu

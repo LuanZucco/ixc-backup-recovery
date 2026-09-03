@@ -32,6 +32,7 @@ ui_title() {
     echo "${C_CYAN}╰${border}╯${C_RESET}"
 }
 
+ui_subtitle() { echo; echo "${C_BOLD}$1${C_RESET}"; }
 ui_success() { echo "${C_GREEN}[OK]${C_RESET} $1"; }
 ui_warning() { echo "${C_YELLOW}[ATENÇÃO]${C_RESET} $1"; }
 ui_error()   { echo "${C_RED}[ERRO]${C_RESET} $1" >&2; }
@@ -101,7 +102,7 @@ ui_prompt() {
     local label="$1"
     local value
     if ! read -r -p "${label}: " value; then
-        ui_error "Não foi possível ler a entrada (stdin fechado ou indisponível)." >&2
+        ui_error "Não foi possível ler a entrada - stdin fechado ou indisponível." >&2
         return 1
     fi
     printf '%s' "$value"
@@ -117,7 +118,7 @@ ui_password() {
     local value
     if ! read -r -s -p "${prompt}" value; then
         echo >&2
-        ui_error "Não foi possível ler a senha (stdin fechado ou indisponível)." >&2
+        ui_error "Não foi possível ler a senha - stdin fechado ou indisponível." >&2
         return 1
     fi
     echo >&2
@@ -140,6 +141,22 @@ ui_progress_bar() {
         if [[ $i -lt $filled ]]; then bar+="█"; else bar+="░"; fi
     done
     printf '%s' "$bar"
+}
+
+# ui_pad "texto" largura -> "texto" + espaços até completar a largura.
+#
+# Existe porque o `printf "%-Ns"` do bash calcula a largura por BYTE, não
+# por caractere visível - mesmo com LANG=*.UTF-8. Pra texto só-ASCII isso
+# não faz diferença, mas qualquer símbolo multi-byte (✓, —, etc.) tem mais
+# bytes do que colunas na tela, e o printf conta os bytes extras como se já
+# preenchessem a largura - desalinhando só a linha que tem o símbolo,
+# nunca as outras. `${#texto}` do bash, ao contrário do printf, já conta
+# caracteres certo sob UTF-8 (mesma base usada em ui_title pra bordas).
+ui_pad() {
+    local text="$1" width="$2"
+    local pad=$(( width - ${#text} ))
+    [[ "$pad" -lt 0 ]] && pad=0
+    printf '%s%*s' "$text" "$pad" ''
 }
 
 # Desenha uma tabela simples de largura fixa por coluna.

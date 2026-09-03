@@ -46,13 +46,13 @@ credentials_ensure_es_password() {
     # conferir visualmente o que foi digitado). Nunca vai pro log
     # (log_register_secret redige qualquer ocorrência nas linhas gravadas).
     local value
-    if ! value="$(ui_prompt 'Senha descriptografada (visível)')"; then
+    if ! value="$(ui_prompt 'Senha descriptografada, visível')"; then
         ui_muted "Alternativa: rode com ES_PASSWORD='sua_senha' na frente do comando."
         return 1
     fi
 
     if [[ -z "$value" ]]; then
-        ui_error "Nenhuma senha foi informada (campo veio vazio) - a autenticação vai falhar com senha em branco."
+        ui_error "O campo de senha veio vazio - a autenticação vai falhar com senha em branco."
         ui_muted "Alternativa: rode com ES_PASSWORD='sua_senha' na frente do comando."
         return 1
     fi

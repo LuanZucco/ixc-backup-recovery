@@ -7,9 +7,39 @@ padrão do sistema.
 
 ## O que faz
 
-- Menu principal, com cabeçalho fixo (servidor/SO/status do Elasticsearch).
-- Fluxo completo de restauração do Elasticsearch:
-  - localizar backup `.ixc` (busca automática ou caminho manual);
+- Menu principal ("ELASTIC - Diagnósticos e Restauração"), com cabeçalho
+  fixo (servidor/SO/status do Elasticsearch).
+- **Senha do Elasticsearch pedida uma única vez, logo na abertura**: localiza
+  `ELASTICS_HASHPASS`, mostra o valor cifrado e coleta a senha já
+  descriptografada (entrada visível) antes mesmo de mostrar o menu
+  principal - fica em memória para o resto desta execução, então nenhuma
+  tela mais adiante (diagnóstico ou restauração) pergunta de novo. Não
+  informar nesse momento não trava nada: quem realmente precisar dela pede
+  na hora. Dura só a execução atual do `.sh` - fechou e abriu de novo, pede
+  outra vez.
+- Fluxo completo de restauração do Elasticsearch, sempre com um checklist
+  de progresso (3x3, ✓ concluída / » atual / pendente) redesenhado no topo
+  a cada etapa - a tela é limpa antes de cada etapa nova em vez de ir só
+  empilhando título atrás de título pra baixo (ver `wizard_render_progress`
+  em `lib/wizard.sh`):
+  - localizar backup `.ixc` (busca automática ou caminho manual) - toda
+    tabela de backups vem ordenada do mais recente pro mais antigo (pela
+    data/hora embutida no nome do arquivo, não pelo mtime), destacando em
+    verde (`✓ contém Elastic`) os que realmente têm dados do Elasticsearch
+    dentro, e a **linha inteira** do mais recente DESSES vem em verde,
+    marcada "MAIS RECENTE" - um `BKP_B`/`BKP_C` mais novo que todos os
+    backups do Elasticsearch não conta, não é "o mais recente" pra quem tá
+    restaurando Elasticsearch. O mesmo destaque (linha/opção inteira em
+    verde) aparece em todo lugar que lista backups ou snapshots: na tabela
+    e no menu numerado de escolher o backup, na tela de retomada, na
+    tabela e no menu de escolher o snapshot, e no diagnóstico de
+    snapshots. Os que **não** têm dados do Elasticsearch (`BKP_B_`,
+    `BKP_C_`, e qualquer outro código) vêm em **vermelho**, tanto na
+    tabela quanto no menu numerado de escolher o backup - pra não
+    confundir na hora de selecionar. Convenção de nome do backup IXC: `BKP_E_...` = só
+    Elasticsearch, `BKP_CS_...` = completo/todo o sistema; `BKP_B_...`
+    banco de dados e `BKP_C_...` configurações não têm - ver
+    `backup_contains_elastic` em `lib/backup.sh`);
   - obter a senha do backup - deriva automaticamente a partir do nome do
     arquivo (`ixcsoft` + data/hora embutida) quando o padrão é reconhecido,
     senão pede ao operador (entrada visível);
@@ -19,13 +49,27 @@ padrão do sistema.
     antigo, e barra de progresso real na limpeza);
   - extrair os dados pro repository e corrigir permissões, com barra de
     progresso real (contagem de arquivos);
-  - localizar `ELASTICS_HASHPASS` e coletar a senha já descriptografada
-    (entrada visível);
   - validar o Elasticsearch, com correção simplificada de single-node
     quando seguro (bloqueada automaticamente se houver indício de
     ambiente multi-node);
-  - registrar o repository, listar e selecionar snapshot;
-  - substituir índices existentes (com confirmação);
+  - registrar o repository, listar e selecionar snapshot - a tela deixa
+    explícito de qual backup `.ixc` aquele repository (e os snapshots
+    dentro dele) veio, tanto aqui quanto no resumo final; a informação
+    sobrevive a fechar e abrir a ferramenta de novo (marcador em
+    `${ES_REPOSITORY_PATH}/.ixc-backup-source`, ver
+    `wizard_backup_source_name` em `lib/wizard.sh`);
+  - **escolher quais índices restaurar** - por padrão todos os do
+    snapshot, mas dá pra restringir a um índice específico ou a alguns (ex:
+    recuperar só um índice corrompido, sem tocar no resto); a pergunta só
+    aparece quando o snapshot tem mais de um índice - ver
+    `_wizard_select_indices_to_restore` em `lib/wizard.sh`. Toda etapa
+    seguinte (checagem de índices já existentes, o corpo da chamada de
+    restauração pro Elasticsearch, o monitoramento em tempo real e o
+    resumo final) passa a considerar só os índices escolhidos aqui, nunca
+    o snapshot inteiro;
+  - substituir índices existentes (com confirmação) - a checagem é só
+    sobre os índices escolhidos no passo acima, não sobre todo o
+    snapshot;
   - restaurar e **monitorar em tempo real** com dados reais do
     `_cat/recovery` - inclusive recuperando sozinho de falhas temporárias
     de rede/autenticação durante o monitoramento, sem derrubar a
@@ -34,12 +78,21 @@ padrão do sistema.
     (senha do Elasticsearch errada, cluster indisponível), tentar de novo
     não repete a extração do backup - a ferramenta detecta o que já foi
     preparado (em disco, sobrevive até a um reinício da ferramenta) e
-    pula direto pra frente.
-- Diagnóstico completo (somente leitura): status do serviço, cluster
-  health, índices atuais, repositories, snapshots, verificação do
-  repository e da configuração do Elasticsearch.
-- Listagem de backups `.ixc` e visualização de logs.
-- Log por execução em `/var/log/ixc-backup-recovery/`, com redação
+    pula direto pra frente. Antes de pular, mostra de qual backup os dados
+    já prontos vieram (quando esse dado existe) e lista **todos** os
+    backups `.ixc` com dados do Elasticsearch disponíveis (`E` e `CS`, do
+    mais recente pro mais antigo - ver `backup_print_elastic_table` em
+    `lib/backup.sh`), não só o mais recente - a decisão de qual usar é do
+    operador. As opções nessa tela são continuar com o que já está pronto,
+    selecionar um backup (o mesmo ou outro) e extrair do zero, ou
+    cancelar.
+- Diagnóstico (somente leitura), 4 telas: status geral (serviço + cluster
+  health), índices atuais, snapshots, e repository (junta o que está
+  registrado via API, o diretório em disco e a configuração do
+  Elasticsearch numa única tela).
+- Listagem de backups `.ixc` encontrados.
+- Log por execução em `/var/log/ixc-backup-recovery/` (`cat`/`tail` direto
+  no servidor pra consultar - sem tela própria no menu), com redação
   automática de qualquer segredo registrado durante a execução.
 
 ## Segurança
@@ -71,7 +124,7 @@ padrão do sistema.
 ## Como rodar
 
 ```bash
-cd ~/ixc-backup-recovery
+cd ~/Área\ de\ Trabalho/IXC\ Backup\ Recovery/elastic
 ALLOW_NON_ROOT=1 ./ixc-recovery.sh   # teste local, sem precisar ser root
 sudo ./ixc-recovery.sh                # uso normal (root)
 ```

@@ -11,12 +11,62 @@ WIZARD_BACKUP_PASSWORD=""
 WIZARD_ELASTIC_TARGZ=""
 WIZARD_SELECTED_SNAPSHOT=""
 WIZARD_SNAPSHOT_INDICES_CSV=""
+WIZARD_RESTORE_INDICES_CSV=""
+
+WIZARD_STEP_LABELS=("Escolher Backup" "Senha do Backup" "Extrair Elastic" "Gravar no Disco" "Checar Cluster" "Registrar Repo" "Escolher Snapshot" "Conferir Índices" "Restaurar Dados")
+
+# wizard_render_progress <etapa 1-9, ou 10 para "tudo concluído">
+# Limpa a tela e desenha um checklist 3x3 das etapas da restauração antes
+# do conteúdo de cada etapa (✓ concluída, » atual, resto em cinza) - troca
+# o comportamento anterior de só empilhar título atrás de título pra baixo,
+# sem nunca limpar a tela, o que fazia a restauração inteira virar uma
+# rolagem só crescendo. O histórico completo continua no log e no
+# scrollback do terminal, só não fica mais tudo empilhado na tela ao vivo.
+wizard_render_progress() {
+    local current="$1"
+    ui_clear
+    ui_title "RESTAURAR ELASTICSEARCH"
+
+    local width=18
+    local row col i label padded cell line
+    for row in 0 1 2; do
+        line=""
+        for col in 0 1 2; do
+            i=$(( row * 3 + col ))
+            label="${WIZARD_STEP_LABELS[$i]}"
+            padded="$(printf '%-*s' "$width" "$label")"
+            if [[ "$i" -lt $((current - 1)) ]]; then
+                cell="${C_GREEN}✓ ${padded}${C_RESET}"
+            elif [[ "$i" -eq $((current - 1)) ]]; then
+                cell="${C_CYAN}${C_BOLD}» ${padded}${C_RESET}"
+            else
+                cell="${C_GREY}  ${padded}${C_RESET}"
+            fi
+            line+="$cell"
+        done
+        echo "$line"
+    done
+    ui_hr
+}
+
+# Ecoa o nome do backup .ixc de onde veio o repository atual: o
+# selecionado nesta execução, ou (se for uma restauração retomada) o
+# marcador gravado por uma tentativa anterior - ver
+# _wizard_extract_into_repo_and_fix_perms. Vazio se nenhum dos dois existir.
+wizard_backup_source_name() {
+    if [[ -n "$WIZARD_SELECTED_BACKUP_NAME" ]]; then
+        printf '%s' "$WIZARD_SELECTED_BACKUP_NAME"
+    elif [[ -f "${ES_REPOSITORY_PATH}/.ixc-backup-source" ]]; then
+        head -n1 "${ES_REPOSITORY_PATH}/.ixc-backup-source" 2>/dev/null
+    fi
+}
 
 _wizard_select_backup() {
     WIZARD_SELECTED_BACKUP_PATH=""
     WIZARD_SELECTED_BACKUP_NAME=""
 
-    ui_title "BACKUPS ENCONTRADOS"
+    wizard_render_progress 1
+    ui_subtitle "BACKUPS ENCONTRADOS"
     backup_find
 
     if [[ ${#BACKUP_FOUND_FILES[@]} -gt 0 ]]; then
@@ -36,9 +86,21 @@ _wizard_select_backup() {
     case "$choice" in
         0) return 1 ;;
         1)
-            local num_options=() i
+            local num_options=() i marked_newest=0
             for i in "${!BACKUP_FOUND_FILES[@]}"; do
-                num_options+=("$((i + 1))" "$(basename "${BACKUP_FOUND_FILES[$i]}")")
+                local bname opt_label
+                bname="$(basename "${BACKUP_FOUND_FILES[$i]}")"
+                if backup_contains_elastic "$bname"; then
+                    if [[ "$marked_newest" -eq 0 ]]; then
+                        opt_label="${C_GREEN}${bname}  - MAIS RECENTE${C_RESET}"
+                        marked_newest=1
+                    else
+                        opt_label="${C_GREEN}${bname}${C_RESET}"
+                    fi
+                else
+                    opt_label="${C_RED}${bname}${C_RESET}"
+                fi
+                num_options+=("$((i + 1))" "$opt_label")
             done
             local idx
             idx="$(ui_menu 'Número do backup' "${num_options[@]}")"
@@ -60,7 +122,8 @@ _wizard_select_backup() {
 }
 
 _wizard_obtain_password() {
-    ui_title "SENHA DO BACKUP"
+    wizard_render_progress 2
+    ui_subtitle "SENHA DO BACKUP"
     if ! backup_obtain_password "$WIZARD_SELECTED_BACKUP_NAME"; then
         return 1
     fi
@@ -76,7 +139,8 @@ _wizard_obtain_password() {
 # processado do arquivo .ixc - não só o arquivo de saída crescendo, que só
 # começa a crescer quando o tar finalmente alcança o componente do ES.
 _wizard_extract_component() {
-    ui_title "EXTRAÇÃO DO ELASTICSEARCH"
+    wizard_render_progress 3
+    ui_subtitle "EXTRAÇÃO DO ELASTICSEARCH"
 
     local work_dir="${WORK_DIR}/extract"
     rm -rf "$work_dir"
@@ -88,7 +152,7 @@ _wizard_extract_component() {
     total_size="$(stat -c%s "$WIZARD_SELECTED_BACKUP_PATH" 2>/dev/null || echo 0)"
     total_human="$(backup_size_human "$total_size")"
 
-    ui_step "Descriptografando e localizando elastic_backup.tar.gz (${total_human} no total)..."
+    ui_step "Descriptografando e localizando elastic_backup.tar.gz - ${total_human} no total..."
     ui_muted "O componente do Elasticsearch pode estar em qualquer ponto do arquivo -"
     ui_muted "o progresso abaixo é do backup inteiro sendo lido, não só do resultado."
 
@@ -111,9 +175,9 @@ _wizard_extract_component() {
         local kind="desconhecido"
         [[ -f "${work_dir}/.error_kind" ]] && kind="$(cat "${work_dir}/.error_kind")"
         if [[ "$kind" == "senha" ]]; then
-            ui_error "Não foi possível descriptografar o backup (senha incorreta ou arquivo corrompido)."
+            ui_error "Não foi possível descriptografar o backup - senha incorreta ou arquivo corrompido."
         else
-            ui_error "O componente do Elasticsearch não foi encontrado no backup (ou a senha está incorreta)."
+            ui_error "O componente do Elasticsearch não foi encontrado no backup, ou a senha está incorreta."
         fi
         ui_muted "Senha usada nesta tentativa: ${WIZARD_BACKUP_PASSWORD}"
         if [[ -s "${work_dir}/.stderr" ]]; then
@@ -124,12 +188,13 @@ _wizard_extract_component() {
     fi
 
     WIZARD_ELASTIC_TARGZ="$dest"
-    ui_success "Arquivo extraído com sucesso ($(backup_size_human "$(stat -c%s "$dest")"))"
+    ui_success "Arquivo extraído com sucesso - $(backup_size_human "$(stat -c%s "$dest")")"
     return 0
 }
 
 _wizard_prepare_repository() {
-    ui_title "PREPARAÇÃO DO REPOSITÓRIO ELASTICSEARCH"
+    wizard_render_progress 4
+    ui_subtitle "PREPARAÇÃO DO REPOSITÓRIO ELASTICSEARCH"
     ui_muted "Diretório: ${ES_REPOSITORY_PATH}"
 
     local exists=0 has_content=0
@@ -170,7 +235,11 @@ _wizard_clean_repository_with_feedback() {
         local elapsed total done_count last bar
         elapsed=$(( $(date +%s) - start_epoch ))
         total="$(grep -m1 '^total:' "$status_file" 2>/dev/null | cut -d: -f2)"
-        done_count="$(grep -c '^item:' "$status_file" 2>/dev/null || echo 0)"
+        # `grep -c` já imprime "0" (não nada) quando não há match - um
+        # "|| echo 0" aqui duplicaria a saída ("0\n0") bem na janela entre o
+        # "total:N" ser escrito e o primeiro "item:" aparecer, quebrando a
+        # conta do percentual logo abaixo.
+        done_count="$(grep -c '^item:' "$status_file" 2>/dev/null)"
         last="$(grep '^item:' "$status_file" 2>/dev/null | tail -n1 | cut -d: -f2-)"
 
         if [[ -n "$total" && "$total" -gt 0 ]]; then
@@ -260,6 +329,15 @@ _wizard_extract_into_repo_and_fix_perms() {
         return 1
     fi
     ui_success "Permissões do repository corrigidas"
+
+    # Registra de qual .ixc este repository veio - sobrevive a fechar e
+    # abrir a ferramenta de novo (ao contrário de WIZARD_SELECTED_BACKUP_NAME,
+    # que só existe na memória desta execução), então uma restauração
+    # retomada de uma tentativa anterior ("REPOSITÓRIO JÁ PREPARADO") ainda
+    # consegue mostrar de qual backup os snapshots vieram.
+    if [[ -n "$WIZARD_SELECTED_BACKUP_NAME" ]]; then
+        printf '%s\n' "$WIZARD_SELECTED_BACKUP_NAME" > "${ES_REPOSITORY_PATH}/.ixc-backup-source" 2>/dev/null || true
+    fi
     return 0
 }
 
@@ -286,7 +364,7 @@ _wizard_print_health() {
 }
 
 _wizard_handle_cluster_problem() {
-    ui_error "O Elasticsearch não conseguiu formar o cluster (ou não respondeu)."
+    ui_error "O Elasticsearch não conseguiu formar o cluster, ou não respondeu."
 
     if [[ ! -f "$ES_CONFIG_FILE" ]]; then
         ui_warning "Arquivo de configuração não encontrado: ${ES_CONFIG_FILE}"
@@ -312,7 +390,7 @@ _wizard_handle_cluster_problem() {
 
     local backup_path
     backup_path="$(singlenode_backup_config)"
-    ui_success "Configuração ajustada (backup em ${backup_path})"
+    ui_success "Configuração ajustada - backup em ${backup_path}"
     singlenode_apply_config
     ui_step "Reiniciando o Elasticsearch..."
     singlenode_restart_elasticsearch 20 || return 1
@@ -330,7 +408,8 @@ _wizard_handle_cluster_problem() {
 }
 
 _wizard_validate_elasticsearch() {
-    ui_title "ELASTICSEARCH"
+    wizard_render_progress 5
+    ui_subtitle "ELASTICSEARCH"
     local state
     state="$(es_service_status)"
     if [[ "$state" != "active" ]]; then
@@ -338,7 +417,7 @@ _wizard_validate_elasticsearch() {
         journalctl -u "${ES_SERVICE_NAME}" -n 20 --no-pager 2>/dev/null | sed 's/^/  /'
         return 1
     fi
-    ui_success "Serviço: ONLINE (${state})"
+    ui_success "Serviço: ONLINE"
 
     local health_json
     health_json="$(es_curl GET "/_cluster/health")"
@@ -375,7 +454,8 @@ _wizard_validate_elasticsearch() {
 }
 
 _wizard_register_repository() {
-    ui_title "REPOSITORY DO ELASTICSEARCH"
+    wizard_render_progress 6
+    ui_subtitle "REPOSITORY DO ELASTICSEARCH"
     local repos_json
     repos_json="$(es_repositories)"
 
@@ -409,9 +489,29 @@ _wizard_select_snapshot() {
     WIZARD_SELECTED_SNAPSHOT=""
     WIZARD_SNAPSHOT_INDICES_CSV=""
 
-    ui_title "SNAPSHOTS DISPONÍVEIS"
+    wizard_render_progress 7
+    ui_subtitle "SNAPSHOTS DISPONÍVEIS"
+
+    # Deixa explícito de qual backup .ixc esses snapshots vieram - eles não
+    # foram "tirados agora", são o que já existia dentro do repository do
+    # Elasticsearch no momento em que aquele .ixc foi gerado (ver
+    # comentário grande em backup_extract_into_repo).
+    local source_name
+    source_name="$(wizard_backup_source_name)"
+    if [[ -n "$source_name" ]]; then
+        ui_muted "Repository restaurado a partir do backup: ${source_name}"
+        echo
+    fi
+
+    # `ignore_unavailable=true`: sem isso, UM snapshot com dados
+    # incompletos/corrompidos no repository (ex: backup capturado bem no
+    # meio do Elasticsearch escrever um snapshot novo) faz a API recusar
+    # listar TODOS os snapshots, mesmo os que estão completos e bons -
+    # visto ao vivo com um snapshot_missing_exception numa restauração
+    # real. Com essa opção, o Elasticsearch pula só o(s) quebrado(s) e
+    # mostra o resto normalmente.
     local response
-    response="$(es_snapshots)"
+    response="$(es_query "/_snapshot/${ES_REPOSITORY}/_all?format=json&ignore_unavailable=true")" || return 1
     local count
     count="$(jq '.snapshots | length' <<<"$response" 2>/dev/null || echo 0)"
     if [[ "$count" -eq 0 ]]; then
@@ -434,10 +534,18 @@ _wizard_select_snapshot() {
     ui_hr
     local i options=()
     for i in "${!names[@]}"; do
-        local label="${names[$i]}"
-        [[ "$i" -eq 0 ]] && label="${label}  (MAIS RECENTE)"
-        printf "%-3s %-34s %-18s %-10s\n" "$((i + 1))" "$label" "${dates[$i]}" "${states[$i]}"
-        options+=("$((i + 1))" "${names[$i]}")
+        # Colunas de largura fixa (#, SNAPSHOT, DATA, STATUS) sempre
+        # alinhadas - "MAIS RECENTE" vai só no final da linha, nunca dentro
+        # de uma coluna (senão desalinha só aquela linha da tabela).
+        local line menu_label="${names[$i]}"
+        if [[ "$i" -eq 0 ]]; then
+            line="$(printf "%-3s %-34s %-18s %-10s" "$((i + 1))" "${names[$i]}" "${dates[$i]}" "${states[$i]}")"
+            printf '%b\n' "${C_GREEN}${line}  - MAIS RECENTE${C_RESET}"
+            menu_label="${C_GREEN}${names[$i]}  - MAIS RECENTE${C_RESET}"
+        else
+            printf "%-3s %-34s %-18s %-10s\n" "$((i + 1))" "${names[$i]}" "${dates[$i]}" "${states[$i]}"
+        fi
+        options+=("$((i + 1))" "$menu_label")
     done
 
     local idx
@@ -449,16 +557,75 @@ _wizard_select_snapshot() {
 
     echo
     ui_muted "Índices no snapshot: ${WIZARD_SNAPSHOT_INDICES_CSV//,/, }"
+
+    _wizard_select_indices_to_restore
+    return 0
+}
+
+# Decide quais índices do snapshot escolhido vão ser restaurados de fato -
+# por padrão todos, mas o operador pode restringir a um ou alguns (ex:
+# recuperar só um índice específico sem mexer nos outros). Preenche
+# WIZARD_RESTORE_INDICES_CSV (subconjunto de WIZARD_SNAPSHOT_INDICES_CSV,
+# nunca um curinga - a lista final sempre vem de nomes explícitos, os
+# mesmos já retornados pelo próprio snapshot). Não pergunta nada se o
+# snapshot só tem um índice - não há o que escolher.
+_wizard_select_indices_to_restore() {
+    WIZARD_RESTORE_INDICES_CSV="$WIZARD_SNAPSHOT_INDICES_CSV"
+
+    local idx_array=()
+    IFS=',' read -ra idx_array <<< "$WIZARD_SNAPSHOT_INDICES_CSV"
+    [[ ${#idx_array[@]} -le 1 ]] && return 0
+
+    echo
+    local choice
+    choice="$(ui_menu "Restaurar quais índices?" \
+        "1" "Todos os índices deste snapshot" \
+        "2" "Selecionar índices específicos")"
+    [[ "$choice" == "1" ]] && return 0
+
+    echo
+    ui_muted "Índices disponíveis neste snapshot:"
+    local i
+    for i in "${!idx_array[@]}"; do
+        echo "  [$((i + 1))] ${idx_array[$i]}"
+    done
+    echo
+
+    local raw
+    raw="$(ui_prompt 'Números dos índices, separados por vírgula (ex: 1,3) - deixe em branco pra restaurar todos')"
+
+    if [[ -z "$raw" ]]; then
+        ui_muted "Restaurando todos os índices do snapshot."
+        return 0
+    fi
+
+    local selected=() pieces piece pos
+    IFS=',' read -ra pieces <<< "$raw"
+    for piece in "${pieces[@]}"; do
+        piece="$(tr -d '[:space:]' <<<"$piece")"
+        [[ "$piece" =~ ^[0-9]+$ ]] || continue
+        pos=$((piece - 1))
+        [[ "$pos" -ge 0 && "$pos" -lt ${#idx_array[@]} ]] && selected+=("${idx_array[$pos]}")
+    done
+
+    if [[ ${#selected[@]} -eq 0 ]]; then
+        ui_warning "Nenhum índice válido reconhecido no que foi digitado - restaurando todos os índices do snapshot."
+        return 0
+    fi
+
+    WIZARD_RESTORE_INDICES_CSV="$(IFS=,; echo "${selected[*]}")"
+    ui_success "Restaurando somente: ${WIZARD_RESTORE_INDICES_CSV//,/, }"
     return 0
 }
 
 _wizard_handle_existing_indices() {
-    ui_title "ÍNDICES EXISTENTES"
+    wizard_render_progress 8
+    ui_subtitle "ÍNDICES EXISTENTES"
     local current_json
     current_json="$(es_current_indices)"
 
     local existing=() idx_array=() idx
-    IFS=',' read -ra idx_array <<< "$WIZARD_SNAPSHOT_INDICES_CSV"
+    IFS=',' read -ra idx_array <<< "$WIZARD_RESTORE_INDICES_CSV"
     for idx in "${idx_array[@]}"; do
         if jq -e --arg idx "$idx" '.[] | select(.index == $idx)' <<<"$current_json" >/dev/null 2>&1; then
             existing+=("$idx")
@@ -499,9 +666,10 @@ _wizard_handle_existing_indices() {
 }
 
 _wizard_start_and_monitor() {
-    ui_title "RESTAURAÇÃO DO SNAPSHOT"
+    wizard_render_progress 9
+    ui_subtitle "RESTAURAÇÃO DO SNAPSHOT"
     local resp
-    resp="$(es_start_restore "$WIZARD_SELECTED_SNAPSHOT")"
+    resp="$(es_start_restore "$WIZARD_SELECTED_SNAPSHOT" "$WIZARD_RESTORE_INDICES_CSV")"
 
     if [[ -z "$resp" ]] || jq -e '.error' <<<"$resp" >/dev/null 2>&1; then
         ui_error "Não foi possível iniciar a restauração do snapshot '${WIZARD_SELECTED_SNAPSHOT}'."
@@ -512,13 +680,14 @@ _wizard_start_and_monitor() {
     ui_success "Restauração iniciada"
     sleep 1
 
-    monitor_restore "$WIZARD_SELECTED_SNAPSHOT" "$WIZARD_SNAPSHOT_INDICES_CSV"
+    monitor_restore "$WIZARD_SELECTED_SNAPSHOT" "$WIZARD_RESTORE_INDICES_CSV"
     return 0
 }
 
 _wizard_final_validation() {
     local started_epoch="$1"
-    ui_title "RESTAURAÇÃO FINALIZADA"
+    wizard_render_progress 10
+    ui_subtitle "RESTAURAÇÃO FINALIZADA"
 
     local health_json status current_json
     health_json="$(es_curl GET "/_cluster/health")"
@@ -536,12 +705,15 @@ _wizard_final_validation() {
     now=$(date +%s)
     elapsed=$(( now - started_epoch ))
 
+    local source_name
+    source_name="$(wizard_backup_source_name)"
+    [[ -n "$source_name" ]] && echo "Backup de origem: ${source_name}"
     echo "Snapshot restaurado: ${WIZARD_SELECTED_SNAPSHOT}"
     echo "Cluster: ${color}${status^^}${C_RESET}"
     echo "Índices restaurados:"
 
     local idx_array=() idx
-    IFS=',' read -ra idx_array <<< "$WIZARD_SNAPSHOT_INDICES_CSV"
+    IFS=',' read -ra idx_array <<< "$WIZARD_RESTORE_INDICES_CSV"
     for idx in "${idx_array[@]}"; do
         if jq -e --arg idx "$idx" '.[] | select(.index == $idx)' <<<"$current_json" >/dev/null 2>&1; then
             ui_success "$idx"
@@ -553,7 +725,27 @@ _wizard_final_validation() {
     printf 'Tempo total: %02d:%02d\n' $((elapsed / 60)) $((elapsed % 60))
     echo "Repository: ${ES_REPOSITORY}"
 
-    log_info "Restauração concluída. snapshot=${WIZARD_SELECTED_SNAPSHOT} cluster=${status} indices=${WIZARD_SNAPSHOT_INDICES_CSV}"
+    log_info "Restauração concluída. backup=${source_name:-desconhecido} snapshot=${WIZARD_SELECTED_SNAPSHOT} cluster=${status} indices=${WIZARD_RESTORE_INDICES_CSV}"
+}
+
+# Mostra de qual backup os dados já prontos (repository ou componente
+# extraído) vieram, se soubermos (ver wizard_backup_source_name), e lista
+# TODOS os backups com dados do Elasticsearch disponíveis (E e CS - ver
+# backup_print_elastic_table), não só o mais recente - quem decide qual
+# usar é o operador, a ferramenta só garante que a informação pra decidir
+# está toda na tela.
+_wizard_show_backup_context() {
+    local prepared_source
+    prepared_source="$(wizard_backup_source_name)"
+    if [[ -n "$prepared_source" ]]; then
+        ui_muted "Backup de origem: ${prepared_source}"
+    else
+        ui_warning "Backup de origem: não identificado - dados de antes deste recurso."
+    fi
+
+    echo
+    backup_find
+    backup_print_elastic_table "$prepared_source" || true
 }
 
 # Fases caras (decifrar+ler o .ixc inteiro, escrever os dados do ES em
@@ -567,22 +759,42 @@ _wizard_final_validation() {
 # não só dentro da mesma sessão.
 _wizard_prepare_backup_data() {
     if repo_looks_valid; then
-        ui_title "REPOSITÓRIO JÁ PREPARADO"
+        wizard_render_progress 5
+        ui_subtitle "REPOSITÓRIO JÁ PREPARADO"
         ui_success "O diretório do repository já contém dados extraídos de uma tentativa anterior."
-        if ui_confirm_or_cancel "Pular a extração do backup e continuar direto da senha do Elasticsearch?"; then
-            return 0
-        fi
-        ui_muted "Ok, refazendo a extração do zero."
+        _wizard_show_backup_context
+        echo
+        local resume_choice
+        resume_choice="$(ui_menu "" \
+            "1" "Continuar com snapshots já extraídos" \
+            "2" "Selecionar backup" \
+            "0" "Cancelar")"
+        case "$resume_choice" in
+            1) return 0 ;;
+            2) ui_muted "Ok, refazendo a extração do zero." ;;
+            0) return 2 ;;
+        esac
     elif [[ -s "${WORK_DIR}/extract/elastic_backup.tar.gz" ]]; then
-        ui_title "COMPONENTE JÁ EXTRAÍDO"
+        wizard_render_progress 4
+        ui_subtitle "COMPONENTE JÁ EXTRAÍDO"
         ui_success "O componente do Elasticsearch já foi extraído do backup numa tentativa anterior."
-        if ui_confirm_or_cancel "Pular a descriptografia do backup e continuar direto da preparação do repositório?"; then
-            WIZARD_ELASTIC_TARGZ="${WORK_DIR}/extract/elastic_backup.tar.gz"
-            _wizard_prepare_repository || return 1
-            _wizard_extract_into_repo_and_fix_perms || return 1
-            return 0
-        fi
-        ui_muted "Ok, refazendo a extração do zero."
+        _wizard_show_backup_context
+        echo
+        local resume_choice
+        resume_choice="$(ui_menu "" \
+            "1" "Continuar com componente já extraído" \
+            "2" "Selecionar backup" \
+            "0" "Cancelar")"
+        case "$resume_choice" in
+            1)
+                WIZARD_ELASTIC_TARGZ="${WORK_DIR}/extract/elastic_backup.tar.gz"
+                _wizard_prepare_repository || return 1
+                _wizard_extract_into_repo_and_fix_perms || return 1
+                return 0
+                ;;
+            2) ui_muted "Ok, refazendo a extração do zero." ;;
+            0) return 2 ;;
+        esac
     fi
 
     local rc=0

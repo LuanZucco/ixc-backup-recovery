@@ -67,19 +67,15 @@ es_response_error_message() {
     http_status="$(jq -r '.status // empty' <<<"$response" 2>/dev/null)"
 
     if [[ "$error_type" == "security_exception" ]]; then
-        printf 'Falha de autenticação no Elasticsearch (usuário/senha incorretos) - %s' "$reason"
+        printf 'Falha de autenticação no Elasticsearch - usuário ou senha incorretos - %s' "$reason"
     else
-        printf '%s - %s (HTTP %s)' "$error_type" "$reason" "${http_status:-?}"
+        printf '%s - %s - HTTP %s' "$error_type" "$reason" "${http_status:-?}"
     fi
     return 0
 }
 
 es_current_indices() {
     es_curl GET "/_cat/indices?format=json"
-}
-
-es_snapshots() {
-    es_curl GET "/_snapshot/${ES_REPOSITORY}/_all?format=json"
 }
 
 es_repositories() {
@@ -100,12 +96,51 @@ es_delete_indices() {
     es_curl DELETE "/${index_csv}"
 }
 
+# es_start_restore <snapshot> <índices,separados,por,vírgula>
+# O chamador é responsável por montar a lista só com nomes explícitos dos
+# índices que devem ser restaurados - nunca um curinga (mesmo padrão de
+# es_delete_indices), mesmo quando a intenção é restaurar todos os índices
+# do snapshot: a lista explícita nesse caso já veio de dentro do próprio
+# snapshot (WIZARD_SNAPSHOT_INDICES_CSV), não é digitada à mão.
 es_start_restore() {
-    local snapshot="$1"
-    es_curl POST "/_snapshot/${ES_REPOSITORY}/${snapshot}/_restore?wait_for_completion=false" "{}"
+    local snapshot="$1" indices_csv="$2"
+    local body
+    body="$(printf '{"indices":"%s"}' "$indices_csv")"
+    es_curl POST "/_snapshot/${ES_REPOSITORY}/${snapshot}/_restore?wait_for_completion=false" "$body"
 }
 
 es_cat_recovery() {
     local index_csv="$1"
     es_curl GET "/_cat/recovery?format=json&index=${index_csv}"
+}
+
+# es_query <path>
+# Sequência padrão repetida em todo diagnóstico somente-leitura: garante a
+# senha do Elasticsearch, confere se `jq` está instalado, consulta <path> e
+# trata resposta vazia ou de erro - sempre com a mensagem certa via
+# ui_error. Ecoa o JSON em stdout só quando tudo deu certo (retorno 0); nos
+# demais casos o erro já foi impresso e o chamador só recebe retorno 1.
+es_query() {
+    local path="$1"
+    credentials_ensure_es_password || return 1
+
+    if ! command -v jq >/dev/null 2>&1; then
+        ui_error "jq não está instalado - necessário para interpretar a resposta do Elasticsearch."
+        return 1
+    fi
+
+    local response
+    response="$(es_curl GET "$path")"
+    if [[ -z "$response" ]]; then
+        ui_error "Sem resposta do Elasticsearch em ${ES_URL}."
+        return 1
+    fi
+
+    local err_msg
+    if err_msg="$(es_response_error_message "$response")"; then
+        ui_error "Não foi possível consultar o Elasticsearch: ${err_msg}"
+        return 1
+    fi
+
+    printf '%s' "$response"
 }
