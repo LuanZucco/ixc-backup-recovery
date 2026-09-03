@@ -136,17 +136,27 @@ sudo ./ixc-recovery.sh                # uso normal (root)
 ./scripts/deploy.sh usuario@servidor 2222     # porta customizada
 ```
 
-Sem SSH disponível (só console/copiar-colar)? Gere um arquivo único:
+Sem SSH disponível (só console/copiar-colar)? Use o arquivo único já
+pronto no repositório, `dist/ixc-recovery-standalone.sh` (versionado no
+git, sempre atualizado junto dos outros commits) - baixe direto ou copie o
+conteúdo dele pro servidor:
+
+```bash
+curl -o ixc-recovery-standalone.sh \
+  https://raw.githubusercontent.com/LuanZucco/ixc-backup-recovery/main/dist/ixc-recovery-standalone.sh
+bash ixc-recovery-standalone.sh
+```
+
+Sem dependências externas além de `bash`, `openssl`, `tar`, `curl`, `jq` e
+`systemctl` (todos padrão em qualquer Debian/Ubuntu, exceto o `jq`, que a
+própria ferramenta oferece instalar).
+
+Se mudar algo em `lib/*.sh` ou `ixc-recovery.sh`, regenere antes de
+commitar:
 
 ```bash
 ./scripts/build_standalone.sh
 ```
-
-Copie `dist/ixc-recovery-standalone.sh` inteiro para um arquivo no
-servidor e rode com `bash ixc-recovery-standalone.sh` - sem dependências
-externas além de `bash`, `openssl`, `tar`, `curl`, `jq` e `systemctl`
-(todos padrão em qualquer Debian/Ubuntu, exceto o `jq`, que a própria
-ferramenta oferece instalar).
 
 ## Estrutura
 
