@@ -1,9 +1,29 @@
 # IXC Backup Recovery Tool
 
-Ferramenta de linha de comando para automatizar a restauração manual de
-backups do Elasticsearch do IXC Provedor em Debian/Linux - bash puro,
-modular (nada de script gigante), sem dependências além de utilitários
-padrão do sistema.
+## O que é
+
+Ferramenta de linha de comando (bash puro, modular - nada de script
+gigante, sem dependências além de utilitários padrão do Debian/Ubuntu)
+que automatiza a restauração manual do **Elasticsearch** a partir de um
+backup `.ixc` do IXC Provedor.
+
+## Pra que serve
+
+A restauração automática do IXC cobre a maioria dos casos, mas quando ela
+falha ou não está disponível, a alternativa hoje é restaurar o
+Elasticsearch manualmente: localizar o backup certo, descriptografar,
+extrair só o componente do Elasticsearch, preparar o repository,
+registrar, escolher o snapshot certo e restaurar - tudo digitando comando
+por comando, sob pressão, durante um incidente real. Essa ferramenta
+assume as partes repetitivas e mecânicas desse processo (e os pontos onde
+um erro de digitação pode causar dano de verdade, como um `rm -rf` no
+diretório errado) e só interrompe o operador quando existe, de fato, uma
+decisão a ser tomada - automatizar o que é repetitivo, perguntar só
+quando importa.
+
+Rode direto no servidor de produção (como root, via SSH) na hora de uma
+restauração de verdade - não é uma ferramenta de desenvolvimento nem de
+uso rotineiro.
 
 ## O que faz
 
